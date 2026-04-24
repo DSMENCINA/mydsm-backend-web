@@ -30,14 +30,37 @@ const db = admin.firestore();
    MIDDLEWARES
 ══════════════════════════════════════ */
 app.use(cors({
-  origin: [
-    'https://www.dancestudiomelipilla.com',
-    'http://localhost:3000',       // para pruebas locales
-    'http://127.0.0.1:5500',       // live server VS Code
-  ],
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type'],
+  origin: function (origin, callback) {
+    // Permitir requests sin origin (apps móviles, Postman, webhooks de MP)
+    if (!origin) return callback(null, true);
+
+    const allowed = [
+      // Producción — con y sin www
+      'https://dancestudiomelipilla.com',
+      'https://www.dancestudiomelipilla.com',
+      // Railway propio (para pruebas desde el dashboard)
+      'https://mydsm-backend-web-production.up.railway.app',
+      // Desarrollo local
+      'http://localhost:3000',
+      'http://localhost:5500',
+      'http://127.0.0.1:5500',
+      'http://127.0.0.1:3000',
+    ];
+
+    if (allowed.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('[CORS] Origen bloqueado:', origin);
+      callback(new Error('No permitido por CORS: ' + origin));
+    }
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
 }));
+
+// Responder preflight OPTIONS correctamente
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -76,9 +99,9 @@ app.post('/crear-preferencia', async (req, res) => {
 
     const preference = {
       items: [{
-        title:      titulo,
-        quantity:   1,
-        unit_price: Number(monto),
+        title:       titulo,
+        quantity:    1,
+        unit_price:  Number(monto),
         currency_id: 'CLP',
       }],
       external_reference,
@@ -186,7 +209,7 @@ app.post('/webhook-mp', async (req, res) => {
       };
       if (estadoFinal === 'aprobado' && planNombre) {
         updateAlumno.planActivo = {
-          nombre: planNombre,
+          nombre:     planNombre,
           activadoEn: ahora,
         };
       }
