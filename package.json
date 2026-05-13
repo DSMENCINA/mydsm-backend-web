@@ -2,10 +2,10 @@
   "name": "dsm-backend",
   "version": "1.0.0",
   "description": "Backend Dance Studio Melipilla — Mercado Pago + Firebase",
-  "main": "servidor.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node servidor.js",
-    "dev": "nodemon servidor.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "engines": {
     "node": ">=18.0.0"
