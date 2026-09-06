@@ -1,34 +1,27 @@
-const express    = require('express');
-const cors       = require('cors');
-const axios      = require('axios');
-const admin      = require('firebase-admin');
+const express = require('express');
+const cors    = require('cors');
+const axios   = require('axios');
+const admin   = require('firebase-admin');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-/* ══════════════════════════════════════
-   FIREBASE ADMIN — inicializar con env
-══════════════════════════════════════ */
-const serviceAccount = {
-  type:                        'service_account',
-  project_id:                  process.env.FIREBASE_PROJECT_ID,
-  private_key_id:              process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key:                 (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-  client_email:                process.env.FIREBASE_CLIENT_EMAIL,
-  client_id:                   process.env.FIREBASE_CLIENT_ID,
-  auth_uri:                    'https://accounts.google.com/o/oauth2/auth',
-  token_uri:                   'https://oauth2.googleapis.com/token',
-};
-
+/* ── Firebase Admin ───────────────────────────────────────── */
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert({
+    type:           'service_account',
+    project_id:     process.env.FIREBASE_PROJECT_ID,
+    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+    private_key:    (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    client_email:   process.env.FIREBASE_CLIENT_EMAIL,
+    client_id:      process.env.FIREBASE_CLIENT_ID,
+    auth_uri:       'https://accounts.google.com/o/oauth2/auth',
+    token_uri:      'https://oauth2.googleapis.com/token',
+  }),
 });
-
 const db = admin.firestore();
 
-/* ══════════════════════════════════════
-   MIDDLEWARES
-══════════════════════════════════════ */
+/* ── CORS ─────────────────────────────────────────────────── */
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
@@ -36,113 +29,78 @@ app.use(cors({
       'https://dancestudiomelipilla.com',
       'https://www.dancestudiomelipilla.com',
       'https://mydsm-backend-web-production.up.railway.app',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
       'http://localhost:3000',
-      'http://localhost:5500',
-      'http://127.0.0.1:5500',
       'http://127.0.0.1:3000',
     ];
-    if (allowed.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.warn('[CORS] Origen bloqueado:', origin);
-      callback(new Error('No permitido por CORS: ' + origin));
-    }
+    if (allowed.includes(origin)) return callback(null, true);
+    console.warn('[CORS] Bloqueado:', origin);
+    callback(new Error('No permitido por CORS: ' + origin));
   },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
-
 app.options('*', cors());
 app.use(express.json());
 
-/* ══════════════════════════════════════
-   HEALTH CHECK
-══════════════════════════════════════ */
-app.get('/', (req, res) => {
+/* ── Health check ─────────────────────────────────────────── */
+app.get('/', (_req, res) => {
   res.json({ status: 'ok', app: 'DSM Backend', ts: new Date().toISOString() });
 });
 
-/* ══════════════════════════════════════════════════════
+/* ────────────────────────────────────────────────────────────
    POST /crear-preferencia
-   Body: { uid, tipo, planNombre, monto, compraId?,
-           payerEmail?, payerName? }
-══════════════════════════════════════════════════════ */
+   Body: {
+     tipo      : 'enrollment' | 'lead' | 'matricula' | 'plan'
+     docId     : ID del documento Firestore ya guardado
+     nombre    : nombre del alumno
+     email     : email del alumno
+     descripcion : texto del ítem en MP
+     monto     : número en CLP
+   }
+   ──────────────────────────────────────────────────────────── */
 app.post('/crear-preferencia', async (req, res) => {
   try {
-    const { uid, tipo, planNombre, monto, compraId, payerEmail, payerName } = req.body;
+    const { tipo, docId, nombre, email, descripcion, monto } = req.body;
 
-    if (!uid || !tipo || !monto) {
-      return res.status(400).json({ error: 'Faltan parámetros: uid, tipo, monto' });
+    if (!tipo || !docId || !monto) {
+      return res.status(400).json({ error: 'Faltan campos: tipo, docId, monto' });
     }
 
-    // ── Título del pago ──────────────────────────────
-    const titulo = tipo === 'matricula'
-      ? `Matrícula + ${planNombre || 'Plan'} — Dance Studio Melipilla`
-      : `${planNombre || 'Plan'} — Dance Studio Melipilla`;
+    // Qué colección de Firestore corresponde
+    const colMap = {
+      enrollment: 'enrollments',
+      lead:       'leads',
+      matricula:  'enrollments',
+      plan:       'enrollments',
+    };
+    const coleccion = colMap[tipo] || 'enrollments';
 
-    // ── ID y descripción del ítem ────────────────────
-    // FIX 1: Agregar id, description y category_id
-    // Esto reduce rechazos por el motor antifraude de MP
-    const itemId = tipo === 'matricula' ? 'MAT-DSM-001' : `PLAN-DSM-${(planNombre || 'plan').replace(/\s+/g, '-').toUpperCase()}`;
-    const itemDescription = tipo === 'matricula'
-      ? `Matrícula de inscripción más plan ${planNombre || ''} en Dance Studio Melipilla, Melipilla`.trim()
-      : `Plan de clases ${planNombre || ''} en Dance Studio Melipilla, Melipilla`.trim();
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.dancestudiomelipilla.com';
+    const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
 
-    // ── Metadata para el webhook ─────────────────────
-    const external_reference = JSON.stringify({
-      uid,
-      tipo,
-      planNombre: planNombre || '',
-      compraId:   compraId   || '',
-    });
-
-    // ── URL de notificación — nunca vacía ────────────
-    // FIX 2: Fallback explícito si RAILWAY_URL no está definida
-    const notifUrl = (process.env.RAILWAY_URL || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
-
-    // ── Datos del comprador ──────────────────────────
-    // FIX 3: Enviar payer para que MP valide contra fraude
-    // Si el front no los manda, los buscamos en Firestore
-    let payer = {};
-    try {
-      const snap = await db.collection('alumnos').doc(uid).get();
-      const alumno = snap.data() || {};
-      const email = payerEmail || alumno.email || '';
-      const nombre = payerName || alumno.nombre || '';
-      const apellido = alumno.apellido || '';
-      if (email) {
-        payer = {
-          email,
-          ...(nombre && { name: nombre }),
-          ...(apellido && { surname: apellido }),
-        };
-      }
-    } catch (e) {
-      console.warn('[crear-preferencia] No se pudo leer payer desde Firestore:', e.message);
-    }
-
-    // ── Armar preferencia completa ───────────────────
     const preference = {
       items: [{
-        id:          itemId,           // ← FIX 1a: requerido por MP antifraude
-        title:       titulo,
-        description: itemDescription,  // ← FIX 1b: mejora tasa de aprobación
-        category_id: 'services',       // ← FIX 1c: categoría (services = servicios)
+        id:          `DSM-${tipo.toUpperCase()}-${docId}`,
+        title:       descripcion || 'Dance Studio Melipilla',
+        description: `Inscripción en Dance Studio Melipilla`,
+        category_id: 'services',
         quantity:    1,
         unit_price:  Number(monto),
         currency_id: 'CLP',
       }],
-      ...(Object.keys(payer).length > 0 && { payer }), // ← FIX 3: datos del comprador
-      external_reference,
+      ...(email ? { payer: { email, ...(nombre ? { name: nombre } : {}) } } : {}),
+      external_reference: JSON.stringify({ tipo, docId, coleccion }),
       back_urls: {
-        success: 'https://www.dancestudiomelipilla.com?pago=aprobado',
-        failure: 'https://www.dancestudiomelipilla.com?pago=rechazado',
-        pending: 'https://www.dancestudiomelipilla.com?pago=pendiente',
+        success: `${frontendUrl}/pago-exitoso`,
+        failure: `${frontendUrl}/pago-fallido`,
+        pending: `${frontendUrl}/pago-pendiente`,
       },
       auto_return:          'approved',
-      notification_url:     notifUrl,  // ← FIX 2: nunca vacía
-      statement_descriptor: 'DANCE STUDIO MELIPILLA',
+      notification_url:     notifUrl,
+      statement_descriptor: 'DANCE STUDIO',
     };
 
     const mpRes = await axios.post(
@@ -150,7 +108,7 @@ app.post('/crear-preferencia', async (req, res) => {
       preference,
       {
         headers: {
-          Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`,
+          Authorization:  `Bearer ${process.env.MP_ACCESS_TOKEN}`,
           'Content-Type': 'application/json',
         },
       }
@@ -159,18 +117,9 @@ app.post('/crear-preferencia', async (req, res) => {
     const { id: preferenceId, init_point, sandbox_init_point } = mpRes.data;
 
     // Guardar preferenceId en Firestore
-    if (tipo === 'matricula') {
-      await db.collection('alumnos').doc(uid).set(
-        { preferenceId, estadoPago: 'pendiente' },
-        { merge: true }
-      );
-    } else if (compraId) {
-      await db.collection('compras').doc(compraId).set(
-        { preferenceId, estadoPago: 'pendiente' },
-        { merge: true }
-      );
-    }
+    await db.collection(coleccion).doc(docId).update({ preferenceId, status: 'pending' });
 
+    console.log(`[crear-preferencia] ${coleccion}/${docId} → ${preferenceId}`);
     res.json({ init_point, sandbox_init_point, preferenceId });
 
   } catch (err) {
@@ -179,12 +128,12 @@ app.post('/crear-preferencia', async (req, res) => {
   }
 });
 
-/* ══════════════════════════════════════════════════════
+/* ────────────────────────────────────────────────────────────
    POST /webhook-mp
-   Mercado Pago llama aquí cuando hay un pago
-══════════════════════════════════════════════════════ */
+   MercadoPago notifica aquí cuando cambia el estado de un pago.
+   ──────────────────────────────────────────────────────────── */
 app.post('/webhook-mp', async (req, res) => {
-  res.sendStatus(200);
+  res.sendStatus(200); // MP necesita 200 inmediato
 
   try {
     const { type, data } = req.body;
@@ -198,86 +147,40 @@ app.post('/webhook-mp', async (req, res) => {
       { headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}` } }
     );
 
-    const pago   = mpRes.data;
-    const estado = pago.status;
-
-    console.log(`[webhook-mp] payment ${paymentId} → ${estado}`);
+    const { status: mpStatus, external_reference } = mpRes.data;
+    console.log(`[webhook-mp] payment ${paymentId} → ${mpStatus}`);
 
     let meta = {};
-    try { meta = JSON.parse(pago.external_reference || '{}'); } catch (_) {}
+    try { meta = JSON.parse(external_reference || '{}'); } catch (_) {}
 
-    const { uid, tipo, planNombre, compraId } = meta;
-    if (!uid) {
-      console.warn('[webhook-mp] Sin uid en external_reference');
+    const { coleccion, docId } = meta;
+    if (!coleccion || !docId) {
+      console.warn('[webhook-mp] Sin coleccion/docId en metadata');
       return;
     }
 
-    const estadoFinal = estado === 'approved' ? 'aprobado'
-                      : estado === 'rejected'  ? 'rechazado'
-                      : 'pendiente';
+    const statusMap = {
+      approved:   'paid',
+      rejected:   'rejected',
+      pending:    'pending',
+      in_process: 'pending',
+    };
 
-    const ahora = admin.firestore.FieldValue.serverTimestamp();
+    await db.collection(coleccion).doc(docId).update({
+      status:    statusMap[mpStatus] || mpStatus,
+      paymentId: String(paymentId),
+      mpStatus,
+      paidAt:    mpStatus === 'approved' ? admin.firestore.FieldValue.serverTimestamp() : null,
+    });
 
-    /* ── Matrícula ── */
-    if (tipo === 'matricula') {
-      const updateAlumno = {
-        estadoPago:        estadoFinal,
-        pagoId:            String(paymentId),
-        fechaPago:         ahora,
-        matriculaCompleta: estadoFinal === 'aprobado',
-      };
-      if (estadoFinal === 'aprobado' && planNombre) {
-        updateAlumno.planActivo = { nombre: planNombre, activadoEn: ahora };
-      }
-      await db.collection('alumnos').doc(uid).set(updateAlumno, { merge: true });
-      console.log(`[webhook-mp] Matrícula ${uid} → ${estadoFinal}`);
-    }
-
-    /* ── Compra de plan ── */
-    if (tipo === 'plan' && compraId) {
-      await db.collection('compras').doc(compraId).set({
-        estadoPago: estadoFinal,
-        pagoId:     String(paymentId),
-        fechaPago:  ahora,
-      }, { merge: true });
-
-      if (estadoFinal === 'aprobado') {
-        const vence = new Date();
-        vence.setDate(vence.getDate() + 30);
-        await db.collection('alumnos').doc(uid).set({
-          planActivo: {
-            nombre:   planNombre,
-            compraId,
-            vence:    admin.firestore.Timestamp.fromDate(vence),
-          },
-          planPendiente: admin.firestore.FieldValue.delete(),
-        }, { merge: true });
-      }
-      console.log(`[webhook-mp] Compra ${compraId} (uid ${uid}) → ${estadoFinal}`);
-    }
+    console.log(`[webhook-mp] ${coleccion}/${docId} → ${statusMap[mpStatus]}`);
 
   } catch (err) {
-    console.error('[webhook-mp] Error:', err?.response?.data || err.message);
+    console.error('[webhook-mp]', err?.response?.data || err.message);
   }
 });
 
-/* ══════════════════════════════════════════════════════
-   GET /estado-pago?uid=xxx
-══════════════════════════════════════════════════════ */
-app.get('/estado-pago', async (req, res) => {
-  const { uid } = req.query;
-  if (!uid) return res.status(400).json({ error: 'Falta uid' });
-  try {
-    const snap = await db.collection('alumnos').doc(uid).get();
-    if (!snap.exists) return res.json({ estadoPago: 'no_encontrado' });
-    const { estadoPago, matriculaCompleta, planActivo } = snap.data();
-    res.json({ estadoPago, matriculaCompleta, planActivo: planActivo || null });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ══════════════════════════════════════ */
+/* ── Start ────────────────────────────────────────────────── */
 app.listen(PORT, () => {
   console.log(`🚀 DSM Backend corriendo en puerto ${PORT}`);
 });
