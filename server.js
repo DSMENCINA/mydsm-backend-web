@@ -600,7 +600,7 @@ app.post('/chat', async (req, res) => {
       parts: [{ text: m.text }],
     }));
 
-    const MODELOS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+    const MODELOS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite'];
     const geminiBody = {
       systemInstruction: { parts: [{ text: DANCITO_SYSTEM_PROMPT }] },
       contents,
@@ -623,6 +623,7 @@ app.post('/chat', async (req, res) => {
         } catch (err) {
           ultimoError = err;
           const status = err?.response?.status;
+          console.warn(`[chat] Falló ${modelo} (intento ${intento}): ${status} — ${err?.response?.data?.error?.message || err.message}`);
           if (status === 503 && intento < 2) {
             await new Promise(r => setTimeout(r, 800));
             continue;
