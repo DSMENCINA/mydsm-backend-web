@@ -600,15 +600,44 @@ app.post('/chat', async (req, res) => {
       parts: [{ text: m.text }],
     }));
 
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        systemInstruction: { parts: [{ text: DANCITO_SYSTEM_PROMPT }] },
-        contents,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 350 },
-      },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
+    const MODELOS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+    const geminiBody = {
+      systemInstruction: { parts: [{ text: DANCITO_SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: { temperature: 0.7, maxOutputTokens: 350 },
+    };
+
+    let geminiRes;
+    let ultimoError;
+
+    for (const modelo of MODELOS) {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      let exito = false;
+
+      // Hasta 2 intentos por modelo si está ocupado (503)
+      for (let intento = 1; intento <= 2; intento++) {
+        try {
+          geminiRes = await axios.post(geminiUrl, geminiBody, { headers: { 'Content-Type': 'application/json' } });
+          exito = true;
+          break;
+        } catch (err) {
+          ultimoError = err;
+          const status = err?.response?.status;
+          if (status === 503 && intento < 2) {
+            await new Promise(r => setTimeout(r, 800));
+            continue;
+          }
+          break; // pasa al siguiente modelo
+        }
+      }
+
+      if (exito) {
+        if (modelo !== MODELOS[0]) console.warn(`[chat] Usando modelo de respaldo: ${modelo}`);
+        break;
+      }
+    }
+
+    if (!geminiRes) throw ultimoError;
 
     const reply = geminiRes.data?.candidates?.[0]?.content?.parts?.[0]?.text
       || 'Perdona, no te entendí bien. ¿Puedes reformular tu pregunta?';
