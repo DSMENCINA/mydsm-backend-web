@@ -1,3 +1,4 @@
+const crypto  = require('crypto');
 const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
@@ -232,11 +233,161 @@ function emailPromo({ nombre, promoTitle, price }) {
 }
 
 /* ────────────────────────────────────────────────────────────
+   GALA THE CIRCUS DANCE
+   Nada se guarda hasta que Mercado Pago aprueba el pago:
+   - /crear-preferencia solo valida y crea la preferencia (los datos viajan en external_reference).
+   - /webhook-mp crea la inscripción y toma el cupo cuando el pago está aprobado.
+   ──────────────────────────────────────────────────────────── */
+const GALA_OPEN_AT    = Date.parse('2026-10-29T01:30:00Z'); // 28/10/2026 22:30 Chile
+const GALA_CUPOS_MAX  = 20;
+const GALA_PRECIOS    = { completo: 15000, parcial: 7500 };
+// El orden es parte del trato: el webhook usa la posición. Solo agregar disciplinas AL FINAL.
+const GALA_DISCIPLINAS = [
+  { id: 'urban_kids',  nombre: 'Urban Kids',      min: 5,  max: 8 },
+  { id: 'urban_dance', nombre: 'Urban Dance',     min: 9,  max: 13 },
+  { id: 'reggaeton',   nombre: 'Reggaeton',       min: 12, max: null },
+  { id: 'danza_arabe', nombre: 'Danza Árabe',     min: 12, max: null },
+  { id: 'folklore',    nombre: 'Folklore',        min: 12, max: null },
+  { id: 'heels',       nombre: 'Heels',           min: 12, max: null },
+  { id: 'kpop',        nombre: 'K-POP',           min: 12, max: null },
+  { id: 'ballet',      nombre: 'Ballet Infantil', min: 5,  max: 9 },
+  { id: 'jazz_fusion', nombre: 'Jazz Fusión',     min: 12, max: null },
+];
+
+async function crearPreferenciaGala(req, res) {
+  const { nombre, edad, whatsapp, tipo_pago, disciplinas_ids, descripcion, email } = req.body;
+
+  if (Date.now() < GALA_OPEN_AT) {
+    return res.status(403).json({ error: 'inscripciones_cerradas' });
+  }
+
+  const monto = GALA_PRECIOS[tipo_pago];
+  const nombreOk = String(nombre || '').trim();
+  const edadN = Number(edad);
+  const wa = String(whatsapp || '').replace(/\D/g, '');
+  const idx = Array.isArray(disciplinas_ids)
+    ? [...new Set(disciplinas_ids)].map(id => GALA_DISCIPLINAS.findIndex(d => d.id === id))
+    : [];
+
+  if (!monto || !nombreOk || !(edadN >= 4 && edadN <= 70) || !/^569\d{8}$/.test(wa) || idx.length === 0 || idx.includes(-1)) {
+    return res.status(400).json({ error: 'datos_invalidos' });
+  }
+
+  // Cupos: si alguna disciplina ya está llena, no se crea el pago.
+  const cupos = await db.getAll(...idx.map(i => db.collection('gala_disciplinas_cupos').doc(GALA_DISCIPLINAS[i].id)));
+  const llena = cupos.findIndex(c => c.exists && (c.data().cupos_tomados || 0) >= GALA_CUPOS_MAX);
+  if (llena !== -1) {
+    return res.status(409).json({ error: 'cupo_completo', disciplina: GALA_DISCIPLINAS[idx[llena]].nombre });
+  }
+
+  const docId = crypto.randomBytes(10).toString('hex');
+  const frontendUrl = process.env.FRONTEND_URL || 'https://www.dancestudiomelipilla.com';
+  const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
+
+  // external_reference admite 256 caracteres: claves cortas y disciplinas por posición.
+  const externalReference = JSON.stringify({
+    g: 1,
+    d: docId,
+    p: tipo_pago === 'completo' ? 'c' : 'p',
+    i: idx.join(','),
+    e: edadN,
+    w: wa,
+    n: nombreOk.slice(0, 70),
+  });
+
+  const preference = {
+    items: [{
+      id:          `DSM-GALA-${docId}`,
+      title:       descripcion || 'Gala The Circus Dance',
+      description: 'Inscripción gala The Circus Dance',
+      category_id: 'services',
+      quantity:    1,
+      unit_price:  monto,
+      currency_id: 'CLP',
+    }],
+    ...(email ? { payer: { email, name: nombreOk } } : {}),
+    external_reference: externalReference,
+    back_urls: {
+      success: `${frontendUrl}/inscripcion-gala?pago=aprobado`,
+      failure: `${frontendUrl}/inscripcion-gala?pago=fallido`,
+      pending: `${frontendUrl}/inscripcion-gala?pago=pendiente`,
+    },
+    auto_return:          'approved',
+    notification_url:     notifUrl,
+    statement_descriptor: 'DANCE STUDIO',
+  };
+
+  const mpRes = await axios.post(
+    'https://api.mercadopago.com/checkout/preferences',
+    preference,
+    { headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`, 'Content-Type': 'application/json' } }
+  );
+
+  const { id: preferenceId, init_point, sandbox_init_point } = mpRes.data;
+  console.log(`[gala] preferencia ${preferenceId} (sin guardar nada hasta que se pague)`);
+  return res.json({ init_point, sandbox_init_point, preferenceId });
+}
+
+// Crea la inscripción SOLO con pago aprobado. Es idempotente: Mercado Pago puede avisar varias veces.
+async function registrarInscripcionGala(meta, paymentId) {
+  const disciplinas = String(meta.i || '').split(',').map(n => GALA_DISCIPLINAS[Number(n)]).filter(Boolean);
+  if (!meta.d || disciplinas.length === 0) {
+    console.warn('[gala] referencia incompleta, no se registró:', JSON.stringify(meta));
+    return;
+  }
+
+  const tipoPago = meta.p === 'c' ? 'completo' : 'parcial';
+  const edad = Number(meta.e);
+  const fuera = disciplinas.filter(d => edad < d.min || (d.max !== null && edad > d.max));
+  const ref = db.collection('gala_inscripciones').doc(meta.d);
+  const cupoRefs = disciplinas.map(d => db.collection('gala_disciplinas_cupos').doc(d.id));
+
+  const resultado = await db.runTransaction(async (tx) => {
+    const [ya, ...cupos] = await tx.getAll(ref, ...cupoRefs);
+    if (ya.exists) return 'ya-registrada';
+
+    const sobrecupo = [];
+    cupoRefs.forEach((cRef, k) => {
+      const tomados = cupos[k].exists ? (cupos[k].data().cupos_tomados || 0) : 0;
+      if (tomados >= GALA_CUPOS_MAX) sobrecupo.push(disciplinas[k].id);
+      tx.set(cRef, { nombre: disciplinas[k].nombre, cupos_tomados: tomados + 1, cupos_max: GALA_CUPOS_MAX }, { merge: true });
+    });
+
+    tx.set(ref, {
+      nombre:                    meta.n,
+      edad,
+      disciplinas:               disciplinas.map(d => d.nombre),
+      disciplinas_ids:           disciplinas.map(d => d.id),
+      disciplina:                disciplinas[0].id,
+      whatsapp:                  meta.w,
+      refund_policy_accepted:    true,
+      refund_policy_accepted_at: admin.firestore.FieldValue.serverTimestamp(),
+      refund_policy_version:     '1.0-2026',
+      age_warning:               fuera.length > 0,
+      age_warning_disciplinas:   fuera.map(d => d.id),
+      tipo_pago:                 tipoPago,
+      monto:                     GALA_PRECIOS[tipoPago],
+      status:                    tipoPago === 'parcial' ? 'partial_payment' : 'paid',
+      paymentId:                 String(paymentId),
+      mpStatus:                  'approved',
+      paidAt:                    admin.firestore.FieldValue.serverTimestamp(),
+      createdAt:                 admin.firestore.FieldValue.serverTimestamp(),
+      ...(sobrecupo.length ? { sobrecupo_disciplinas: sobrecupo } : {}),
+    });
+    return sobrecupo.length ? `registrada-con-sobrecupo:${sobrecupo.join(',')}` : 'registrada';
+  });
+
+  console.log(`[gala] ${meta.d} (${meta.n}) → ${resultado}`);
+}
+
+/* ────────────────────────────────────────────────────────────
    POST /crear-preferencia
    ──────────────────────────────────────────────────────────── */
 app.post('/crear-preferencia', async (req, res) => {
   try {
     const { tipo, docId, nombre, email, descripcion, monto } = req.body;
+
+    if (tipo === 'gala') return await crearPreferenciaGala(req, res);
 
     if (!tipo || !docId || !monto) {
       return res.status(400).json({ error: 'Faltan campos: tipo, docId, monto' });
@@ -247,10 +398,8 @@ app.post('/crear-preferencia', async (req, res) => {
       lead:       'leads',
       matricula:  'enrollments',
       plan:       'enrollments',
-      gala:       'gala_inscripciones',   // GALA: inscripciones de The Circus Dance
     };
     const coleccion = colMap[tipo] || 'enrollments';
-    const esGala    = tipo === 'gala';
 
     const frontendUrl = process.env.FRONTEND_URL || 'https://www.dancestudiomelipilla.com';
     const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
@@ -267,17 +416,11 @@ app.post('/crear-preferencia', async (req, res) => {
       }],
       ...(email ? { payer: { email, ...(nombre ? { name: nombre } : {}) } } : {}),
       external_reference: JSON.stringify({ tipo, docId, coleccion }),
-      back_urls: esGala
-        ? {
-            success: `${frontendUrl}/inscripcion-gala?pago=aprobado`,
-            failure: `${frontendUrl}/inscripcion-gala?pago=fallido`,
-            pending: `${frontendUrl}/inscripcion-gala?pago=pendiente`,
-          }
-        : {
-            success: `${frontendUrl}/pago-exitoso`,
-            failure: `${frontendUrl}/pago-fallido`,
-            pending: `${frontendUrl}/pago-pendiente`,
-          },
+      back_urls: {
+        success: `${frontendUrl}/pago-exitoso`,
+        failure: `${frontendUrl}/pago-fallido`,
+        pending: `${frontendUrl}/pago-pendiente`,
+      },
       auto_return:          'approved',
       notification_url:     notifUrl,
       statement_descriptor: 'DANCE STUDIO',
@@ -296,12 +439,7 @@ app.post('/crear-preferencia', async (req, res) => {
 
     const { id: preferenceId, init_point, sandbox_init_point } = mpRes.data;
 
-    // La gala conserva su estado "payment_pending"; el resto de los flujos queda como antes.
-    await db.collection(coleccion).doc(docId).update(
-      esGala
-        ? { mp_preference_id: preferenceId }
-        : { preferenceId, status: 'pending' }
-    );
+    await db.collection(coleccion).doc(docId).update({ preferenceId, status: 'pending' });
 
     console.log(`[crear-preferencia] ${coleccion}/${docId} → ${preferenceId}`);
     res.json({ init_point, sandbox_init_point, preferenceId });
@@ -336,6 +474,12 @@ app.post('/webhook-mp', async (req, res) => {
     let meta = {};
     try { meta = JSON.parse(external_reference || '{}'); } catch (_) {}
 
+    // GALA: solo se guarda si el pago está aprobado; pendiente o rechazado no deja rastro.
+    if (meta.g === 1) {
+      if (mpStatus === 'approved') await registrarInscripcionGala(meta, paymentId);
+      return;
+    }
+
     const { coleccion, docId } = meta;
     if (!coleccion || !docId) {
       console.warn('[webhook-mp] Sin coleccion/docId en metadata');
@@ -349,25 +493,14 @@ app.post('/webhook-mp', async (req, res) => {
       in_process: 'pending',
     };
 
-    let nuevoStatus = statusMap[mpStatus] || mpStatus;
-
-    // GALA: primera cuota ($7.500) = partial_payment; pago completo = paid.
-    // Pendiente o rechazado vuelve a "payment_pending" (no cuenta como recaudado).
-    if (coleccion === 'gala_inscripciones') {
-      const previo = (await db.collection(coleccion).doc(docId).get()).data() || {};
-      nuevoStatus = mpStatus === 'approved'
-        ? (previo.tipo_pago === 'parcial' ? 'partial_payment' : 'paid')
-        : 'payment_pending';
-    }
-
     await db.collection(coleccion).doc(docId).update({
-      status:    nuevoStatus,
+      status:    statusMap[mpStatus] || mpStatus,
       paymentId: String(paymentId),
       mpStatus,
       paidAt:    mpStatus === 'approved' ? admin.firestore.FieldValue.serverTimestamp() : null,
     });
 
-    console.log(`[webhook-mp] ${coleccion}/${docId} → ${nuevoStatus}`);
+    console.log(`[webhook-mp] ${coleccion}/${docId} → ${statusMap[mpStatus]}`);
 
     if (mpStatus === 'approved') {
       const snap = await db.collection(coleccion).doc(docId).get();
