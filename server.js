@@ -247,8 +247,10 @@ app.post('/crear-preferencia', async (req, res) => {
       lead:       'leads',
       matricula:  'enrollments',
       plan:       'enrollments',
+      gala:       'gala_inscripciones',   // GALA: inscripciones de The Circus Dance
     };
     const coleccion = colMap[tipo] || 'enrollments';
+    const esGala    = tipo === 'gala';
 
     const frontendUrl = process.env.FRONTEND_URL || 'https://www.dancestudiomelipilla.com';
     const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
@@ -265,11 +267,17 @@ app.post('/crear-preferencia', async (req, res) => {
       }],
       ...(email ? { payer: { email, ...(nombre ? { name: nombre } : {}) } } : {}),
       external_reference: JSON.stringify({ tipo, docId, coleccion }),
-      back_urls: {
-        success: `${frontendUrl}/pago-exitoso`,
-        failure: `${frontendUrl}/pago-fallido`,
-        pending: `${frontendUrl}/pago-pendiente`,
-      },
+      back_urls: esGala
+        ? {
+            success: `${frontendUrl}/inscripcion-gala?pago=aprobado`,
+            failure: `${frontendUrl}/inscripcion-gala?pago=fallido`,
+            pending: `${frontendUrl}/inscripcion-gala?pago=pendiente`,
+          }
+        : {
+            success: `${frontendUrl}/pago-exitoso`,
+            failure: `${frontendUrl}/pago-fallido`,
+            pending: `${frontendUrl}/pago-pendiente`,
+          },
       auto_return:          'approved',
       notification_url:     notifUrl,
       statement_descriptor: 'DANCE STUDIO',
@@ -288,7 +296,12 @@ app.post('/crear-preferencia', async (req, res) => {
 
     const { id: preferenceId, init_point, sandbox_init_point } = mpRes.data;
 
-    await db.collection(coleccion).doc(docId).update({ preferenceId, status: 'pending' });
+    // La gala conserva su estado "payment_pending"; el resto de los flujos queda como antes.
+    await db.collection(coleccion).doc(docId).update(
+      esGala
+        ? { mp_preference_id: preferenceId }
+        : { preferenceId, status: 'pending' }
+    );
 
     console.log(`[crear-preferencia] ${coleccion}/${docId} → ${preferenceId}`);
     res.json({ init_point, sandbox_init_point, preferenceId });
@@ -336,14 +349,25 @@ app.post('/webhook-mp', async (req, res) => {
       in_process: 'pending',
     };
 
+    let nuevoStatus = statusMap[mpStatus] || mpStatus;
+
+    // GALA: primera cuota ($7.500) = partial_payment; pago completo = paid.
+    // Pendiente o rechazado vuelve a "payment_pending" (no cuenta como recaudado).
+    if (coleccion === 'gala_inscripciones') {
+      const previo = (await db.collection(coleccion).doc(docId).get()).data() || {};
+      nuevoStatus = mpStatus === 'approved'
+        ? (previo.tipo_pago === 'parcial' ? 'partial_payment' : 'paid')
+        : 'payment_pending';
+    }
+
     await db.collection(coleccion).doc(docId).update({
-      status:    statusMap[mpStatus] || mpStatus,
+      status:    nuevoStatus,
       paymentId: String(paymentId),
       mpStatus,
       paidAt:    mpStatus === 'approved' ? admin.firestore.FieldValue.serverTimestamp() : null,
     });
 
-    console.log(`[webhook-mp] ${coleccion}/${docId} → ${statusMap[mpStatus]}`);
+    console.log(`[webhook-mp] ${coleccion}/${docId} → ${nuevoStatus}`);
 
     if (mpStatus === 'approved') {
       const snap = await db.collection(coleccion).doc(docId).get();
@@ -427,7 +451,7 @@ BASE DE CONOCIMIENTO COMPLETA
 
 📍 UBICACIÓN Y CONTACTO:
 - Dirección: Ortúzar 34, Melipilla
-- Sitio web: www.dancestudiomelipilla.com
+- Sitio web: [www.dancestudiomelipilla.com](https://www.dancestudiomelipilla.com)
 - Instagram: @dancestudiomelipilla
 
 💳 MATRÍCULA:
