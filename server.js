@@ -489,52 +489,6 @@ async function registrarInscripcionGala(meta, paymentId) {
 }
 
 /* ────────────────────────────────────────────────────────────
-   POST /test-correo-gala — SOLO PRUEBAS
-   Envía el correo de confirmación de la gala sin pago ni base de datos.
-   Solo acepta el correo de TEST_EMAIL_ALLOW (por defecto angelencinafg@gmail.com) y un envío cada 15 s.
-   Se puede borrar este bloque cuando termine la prueba.
-   ──────────────────────────────────────────────────────────── */
-const TEST_CORREO_PERMITIDO = (process.env.TEST_EMAIL_ALLOW || 'angelencinafg@gmail.com').toLowerCase();
-let ultimaPruebaCorreo = 0;
-
-app.post('/test-correo-gala', async (req, res) => {
-  const { nombre, disciplinas_ids, tipo_pago, email } = req.body || {};
-  const correo = String(email || '').trim().toLowerCase();
-
-  if (correo !== TEST_CORREO_PERMITIDO) {
-    return res.status(403).json({ error: 'correo_no_permitido' });
-  }
-  if (Date.now() - ultimaPruebaCorreo < 15000) {
-    return res.status(429).json({ error: 'espera_unos_segundos' });
-  }
-  ultimaPruebaCorreo = Date.now();
-
-  const tipoPago = tipo_pago === 'completo' ? 'completo' : 'parcial';
-  const monto = GALA_PRECIOS[tipoPago];
-  const nombres = (Array.isArray(disciplinas_ids) ? disciplinas_ids : [])
-    .map(id => GALA_DISCIPLINAS.find(d => d.id === id))
-    .filter(Boolean)
-    .map(d => d.nombre);
-
-  const enviado = await sendBrevoEmail({
-    toEmail: correo,
-    toName:  String(nombre || 'Prueba').slice(0, 70),
-    subject: '[PRUEBA] Tu inscripción a THE CIRCUS DANCE está confirmada',
-    htmlContent: emailGala({
-      nombre:      String(nombre || 'Prueba').slice(0, 70),
-      disciplinas: nombres.length ? nombres : ['Disciplina de prueba'],
-      tipoPago,
-      pagado:      monto,
-      saldo:       tipoPago === 'parcial' ? GALA_PRECIOS.completo - monto : 0,
-    }),
-  });
-
-  return enviado
-    ? res.json({ ok: true })
-    : res.status(502).json({ error: 'brevo_fallo' });
-});
-
-/* ────────────────────────────────────────────────────────────
    POST /crear-preferencia
    ──────────────────────────────────────────────────────────── */
 app.post('/crear-preferencia', async (req, res) => {
