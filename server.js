@@ -232,6 +232,92 @@ function emailPromo({ nombre, promoTitle, price }) {
 </html>`;
 }
 
+function emailGala({ nombre, disciplinas, tipoPago, pagado, saldo }) {
+  const fmt = n => `$${Number(n).toLocaleString('es-CL')} CLP`;
+  const lista = (items) => items.map(t => `<tr><td style="padding:3px 0;color:#e0e0e0;font-size:14px;">&#9670;&nbsp; ${t}</td></tr>`).join('');
+  const filas = disciplinas.map(d => `<tr><td style="padding:3px 0;color:#fff;font-size:15px;font-weight:700;">${d}</td></tr>`).join('');
+  const modalidad = tipoPago === 'completo' ? 'Pago completo' : 'Pago en 2 partes';
+  const saldoBloque = saldo > 0
+    ? `<tr><td style="padding:10px 0 0;color:#ffd98a;font-size:14px;">Saldo pendiente: <strong>${fmt(saldo)}</strong> &middot; segunda cuota el <strong>5 de diciembre de 2026</strong></td></tr>`
+    : '';
+  const waUrl = 'https://wa.me/56982688479?text=' + encodeURIComponent(`Hola DSM, soy ${nombre} y tengo una consulta sobre mi inscripcion a la gala.`);
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0b0414;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0b0414;padding:40px 16px;">
+    <tr><td align="center">
+      <table width="580" cellpadding="0" cellspacing="0" style="max-width:580px;width:100%;background:#150727;border-radius:20px;overflow:hidden;border:1px solid rgba(230,195,106,0.4);">
+        <tr>
+          <td style="background:linear-gradient(135deg,#3b146e 0%,#7b2cbf 55%,#d11aa8 100%);padding:40px 28px 34px;text-align:center;">
+            <p style="margin:0 0 8px;font-size:11px;color:#e6c36a;letter-spacing:4px;text-transform:uppercase;font-weight:700;">Dance Studio Melipilla</p>
+            <h1 style="margin:0 0 8px;font-size:30px;font-weight:900;color:#ffe9a0;letter-spacing:1px;">THE CIRCUS DANCE</h1>
+            <p style="margin:0;font-size:16px;color:#fff;">Tu inscripci&oacute;n est&aacute; confirmada</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:30px 28px 6px;">
+            <p style="margin:0 0 20px;font-size:16px;color:#e8dcff;line-height:1.6;">
+              Hola <strong style="color:#ffe9a0;">${nombre}</strong>, recibimos tu pago y ya eres parte del espect&aacute;culo.
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:rgba(230,195,106,0.07);border:1px solid rgba(230,195,106,0.3);border-radius:14px;margin:0 0 22px;">
+              <tr><td style="padding:18px 20px;">
+                <p style="margin:0 0 8px;font-size:11px;color:#e6c36a;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Disciplinas inscritas</p>
+                <table cellpadding="0" cellspacing="0">${filas}</table>
+                <p style="margin:16px 0 6px;font-size:11px;color:#e6c36a;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Pago</p>
+                <table cellpadding="0" cellspacing="0">
+                  <tr><td style="padding:2px 0;color:#e0e0e0;font-size:14px;">${modalidad}</td></tr>
+                  <tr><td style="padding:2px 0;color:#fff;font-size:17px;font-weight:800;">Pagado: ${fmt(pagado)}</td></tr>
+                  ${saldoBloque}
+                </table>
+              </td></tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 28px 8px;">
+            <p style="margin:0 0 8px;font-size:11px;color:#e6c36a;letter-spacing:2px;text-transform:uppercase;font-weight:700;">La inscripci&oacute;n incluye</p>
+            <table cellpadding="0" cellspacing="0">${lista([
+              'Participaci&oacute;n en la gala',
+              'Reconocimientos',
+              'Fotos y video generales de cada disciplina',
+              'Fotos individuales o grupales en alfombra roja',
+              'Ensayo general',
+            ])}</table>
+            <p style="margin:16px 0 8px;font-size:11px;color:#ff9aab;letter-spacing:2px;text-transform:uppercase;font-weight:700;">No incluye</p>
+            <table cellpadding="0" cellspacing="0">${lista(['Vestuario', 'Clases'])}</table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:18px 28px 8px;">
+            <p style="margin:0;font-size:13px;color:#b9a8d6;line-height:1.6;">
+              Fecha l&iacute;mite de devoluci&oacute;n: <strong style="color:#fff;">9 de noviembre de 2026</strong>. Despu&eacute;s de esta fecha no hay reembolsos por retiro voluntario del alumno.
+              Te contactaremos por WhatsApp para coordinar los detalles del show.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:22px 28px 34px;text-align:center;">
+            <table cellpadding="0" cellspacing="0" align="center"><tr><td>
+              <a href="${waUrl}" style="display:inline-block;background:linear-gradient(135deg,#ff2bd6,#7b2cbf);color:#fff;text-decoration:none;font-weight:700;font-size:15px;padding:14px 30px;border-radius:999px;">
+                Escribirnos por WhatsApp
+              </a>
+            </td></tr></table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:18px 28px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;">
+            <p style="margin:0;font-size:12px;color:#7d6c99;">Dance Studio Melipilla &middot; Melipilla, Regi&oacute;n Metropolitana &middot; dancestudiomelipilla.com</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
 /* ────────────────────────────────────────────────────────────
    GALA THE CIRCUS DANCE
    Nada se guarda hasta que Mercado Pago aprueba el pago:
@@ -265,11 +351,12 @@ async function crearPreferenciaGala(req, res) {
   const nombreOk = String(nombre || '').trim();
   const edadN = Number(edad);
   const wa = String(whatsapp || '').replace(/\D/g, '');
+  const correo = String(email || '').trim();
   const idx = Array.isArray(disciplinas_ids)
     ? [...new Set(disciplinas_ids)].map(id => GALA_DISCIPLINAS.findIndex(d => d.id === id))
     : [];
 
-  if (!monto || !nombreOk || !(edadN >= 4 && edadN <= 70) || !/^569\d{8}$/.test(wa) || idx.length === 0 || idx.includes(-1)) {
+  if (!monto || !nombreOk || !(edadN >= 4 && edadN <= 70) || !/^569\d{8}$/.test(wa) || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(correo) || correo.length > 60 || idx.length === 0 || idx.includes(-1)) {
     return res.status(400).json({ error: 'datos_invalidos' });
   }
 
@@ -292,6 +379,7 @@ async function crearPreferenciaGala(req, res) {
     i: idx.join(','),
     e: edadN,
     w: wa,
+    m: correo,
     n: nombreOk.slice(0, 70),
   });
 
@@ -305,7 +393,7 @@ async function crearPreferenciaGala(req, res) {
       unit_price:  monto,
       currency_id: 'CLP',
     }],
-    ...(email ? { payer: { email, name: nombreOk } } : {}),
+    payer: { email: correo, name: nombreOk },
     external_reference: externalReference,
     back_urls: {
       success: `${frontendUrl}/inscripcion-gala?pago=aprobado`,
@@ -360,6 +448,7 @@ async function registrarInscripcionGala(meta, paymentId) {
       disciplinas_ids:           disciplinas.map(d => d.id),
       disciplina:                disciplinas[0].id,
       whatsapp:                  meta.w,
+      email:                     meta.m || null,
       refund_policy_accepted:    true,
       refund_policy_accepted_at: admin.firestore.FieldValue.serverTimestamp(),
       refund_policy_version:     '1.0-2026',
@@ -378,6 +467,23 @@ async function registrarInscripcionGala(meta, paymentId) {
   });
 
   console.log(`[gala] ${meta.d} (${meta.n}) → ${resultado}`);
+
+  // Correo de confirmación: solo la primera vez que se registra (no si Mercado Pago avisa de nuevo).
+  if (meta.m && resultado.startsWith('registrada')) {
+    const monto = GALA_PRECIOS[tipoPago];
+    await sendBrevoEmail({
+      toEmail: meta.m,
+      toName:  meta.n,
+      subject: 'Tu inscripción a THE CIRCUS DANCE está confirmada',
+      htmlContent: emailGala({
+        nombre:      meta.n,
+        disciplinas: disciplinas.map(d => d.nombre),
+        tipoPago,
+        pagado:      monto,
+        saldo:       tipoPago === 'parcial' ? GALA_PRECIOS.completo - monto : 0,
+      }),
+    });
+  }
 }
 
 /* ────────────────────────────────────────────────────────────
