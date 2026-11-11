@@ -327,7 +327,12 @@ function emailGala({ nombre, disciplinas, tipoPago, pagado, saldo }) {
    - /webhook-mp crea la inscripción y toma el cupo cuando el pago está aprobado.
    ──────────────────────────────────────────────────────────── */
 const GALA_OPEN_AT    = Date.parse('2026-10-29T01:30:00Z'); // 28/10/2026 22:30 Chile
-const GALA_CUPOS_MAX  = 20;
+const GALA_CUPOS_DEFECTO = 20;
+// Cupo máximo de cada disciplina: lo define el administrador en gala_disciplinas_cupos.cupos_max
+const maxCupoDe = (snap) => {
+  const m = snap && snap.exists ? Number(snap.data().cupos_max) : NaN;
+  return Number.isFinite(m) && m >= 1 ? m : GALA_CUPOS_DEFECTO;
+};
 const GALA_PRECIOS    = { completo: 15000, parcial: 7500 };
 // El orden es parte del trato: el webhook usa la posición. Solo agregar disciplinas AL FINAL.
 const GALA_DISCIPLINAS = [
@@ -341,6 +346,29 @@ const GALA_DISCIPLINAS = [
   { id: 'ballet',      nombre: 'Ballet Infantil', min: 5,  max: 9 },
   { id: 'jazz_fusion', nombre: 'Jazz Fusión',     min: 12, max: null },
 ];
+
+// Cuenta de Mercado Pago de la gala. Si no existe MP_ACCESS_TOKEN_GALA se usa la misma cuenta de siempre.
+const tokenGala = () => process.env.MP_ACCESS_TOKEN_GALA || process.env.MP_ACCESS_TOKEN;
+
+// Un pago solo se puede consultar con el token de la cuenta que lo recibió: se prueba primero la
+// cuenta esperada y, si falla, la otra.
+async function obtenerPagoMP(paymentId, esGala) {
+  const tokens = esGala
+    ? [tokenGala(), process.env.MP_ACCESS_TOKEN]
+    : [process.env.MP_ACCESS_TOKEN, process.env.MP_ACCESS_TOKEN_GALA];
+  let ultimoError;
+  for (const token of [...new Set(tokens.filter(Boolean))]) {
+    try {
+      return await axios.get(
+        `https://api.mercadopago.com/v1/payments/${paymentId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+    } catch (err) {
+      ultimoError = err;
+    }
+  }
+  throw ultimoError;
+}
 
 async function crearPreferenciaGala(req, res) {
   const { nombre, edad, whatsapp, tipo_pago, disciplinas_ids, descripcion, email } = req.body;
@@ -364,14 +392,15 @@ async function crearPreferenciaGala(req, res) {
 
   // Cupos: si alguna disciplina ya está llena, no se crea el pago.
   const cupos = await db.getAll(...idx.map(i => db.collection('gala_disciplinas_cupos').doc(GALA_DISCIPLINAS[i].id)));
-  const llena = cupos.findIndex(c => c.exists && (c.data().cupos_tomados || 0) >= GALA_CUPOS_MAX);
+  const llena = cupos.findIndex(c => (c.exists ? (c.data().cupos_tomados || 0) : 0) >= maxCupoDe(c));
   if (llena !== -1) {
     return res.status(409).json({ error: 'cupo_completo', disciplina: GALA_DISCIPLINAS[idx[llena]].nombre });
   }
 
   const docId = crypto.randomBytes(10).toString('hex');
   const frontendUrl = process.env.FRONTEND_URL || 'https://www.dancestudiomelipilla.com';
-  const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp';
+  // ?cuenta=gala avisa al webhook que este pago pertenece a la cuenta de Mercado Pago de la gala
+  const notifUrl    = (process.env.RAILWAY_URL  || 'https://mydsm-backend-web-production.up.railway.app') + '/webhook-mp?cuenta=gala';
 
   // external_reference admite 256 caracteres: claves cortas y disciplinas por posición.
   const externalReference = JSON.stringify({
@@ -410,7 +439,7 @@ async function crearPreferenciaGala(req, res) {
   const mpRes = await axios.post(
     'https://api.mercadopago.com/checkout/preferences',
     preference,
-    { headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}`, 'Content-Type': 'application/json' } }
+    { headers: { Authorization: `Bearer ${tokenGala()}`, 'Content-Type': 'application/json' } }
   );
 
   const { id: preferenceId, init_point, sandbox_init_point } = mpRes.data;
@@ -439,8 +468,8 @@ async function registrarInscripcionGala(meta, paymentId) {
     const sobrecupo = [];
     cupoRefs.forEach((cRef, k) => {
       const tomados = cupos[k].exists ? (cupos[k].data().cupos_tomados || 0) : 0;
-      if (tomados >= GALA_CUPOS_MAX) sobrecupo.push(disciplinas[k].id);
-      tx.set(cRef, { nombre: disciplinas[k].nombre, cupos_tomados: tomados + 1, cupos_max: GALA_CUPOS_MAX }, { merge: true });
+      if (tomados >= maxCupoDe(cupos[k])) sobrecupo.push(disciplinas[k].id);
+      tx.set(cRef, { nombre: disciplinas[k].nombre, cupos_tomados: tomados + 1, cupos_max: maxCupoDe(cupos[k]) }, { merge: true });
     });
 
     tx.set(ref, {
@@ -571,10 +600,7 @@ app.post('/webhook-mp', async (req, res) => {
     const paymentId = data?.id;
     if (!paymentId) return;
 
-    const mpRes = await axios.get(
-      `https://api.mercadopago.com/v1/payments/${paymentId}`,
-      { headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}` } }
-    );
+    const mpRes = await obtenerPagoMP(paymentId, req.query.cuenta === 'gala');
 
     const { status: mpStatus, external_reference } = mpRes.data;
     console.log(`[webhook-mp] payment ${paymentId} → ${mpStatus}`);
